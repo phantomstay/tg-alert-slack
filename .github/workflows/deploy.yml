@@ -1,0 +1,86 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time. A second push waits rather than racing the first.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'   # matches the server
+
+      - name: Install
+        run: |
+          python -m pip install --quiet -r requirements.txt
+          python -m pip install --quiet ruff
+
+      - name: Lint
+        run: ruff check --select=E9,F63,F7,F82 .
+
+      - name: Config files are valid
+        run: python -c "import json; json.load(open('aircraft_images.json'))"
+
+      - name: Parser still handles a real alert
+        run: |
+          python - <<'PY'
+          import alerts
+          a = alerts.parse(
+              "\U0001F6A8 New PJX Flight Alert! \U0001F6A8\n"
+              "\U0001F4CD Route: Venice (VCE) to Paris Le Bourget (LBG)\n"
+              "\U0001F4C5 Date: 12 Sep 2026\n"
+              "\U0001F550 Schedule: 14:30 departure\n"
+              "✈️ Aircraft Type: Global 6000\n"
+              "\U0001F4BA Available Seats: 7\n"
+              "\U0001F4B0 Discounted Rate: $284"
+          )
+          assert a, "alert did not parse"
+          assert (a["from_code"], a["to_code"]) == ("VCE", "LBG"), a
+          assert a["price"] == 284 and a["seats"] == 7, a
+          payload = alerts.to_slack(a)
+          kinds = [b["type"] for b in payload["blocks"]]
+          assert kinds == ["section", "image", "context"], kinds
+          assert payload["blocks"][1]["image_url"].startswith("https://"), payload
+          print("parser and slack payload OK")
+          PY
+
+      - name: No secrets committed
+        run: |
+          if git ls-files | grep -E '^\.env($|\.)' | grep -v '\.env\.example'; then
+            echo "::error::an env file is tracked in git"; exit 1
+          fi
+          if git grep -nIE 'hooks\.slack\.com/services/[A-Z0-9]' -- . ; then
+            echo "::error::a slack webhook url is committed"; exit 1
+          fi
+          echo "clean"
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        env:
+          KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          USER: ${{ secrets.SSH_USER }}
+          HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+          # This key is locked to /usr/local/bin/tg-alert-deploy on the server
+          # by a forced command, so no command is sent from here. The script
+          # pulls main, restarts, and exits non-zero unless it comes back up.
+          ssh -o IdentitiesOnly=yes -o BatchMode=yes "$USER@$HOST"
