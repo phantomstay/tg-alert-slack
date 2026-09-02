@@ -39,6 +39,48 @@ Restarts are safe. On start the service re-reads the last `CATCHUP` (default 20)
 posts, so anything published while it was down still gets delivered, and the
 dedupe table stops it repeating what already went out.
 
+## Monitoring
+
+`tg-alert-health.timer` runs `run.py --health --notify` every 6 hours. It
+posts to `SLACK_OPS_WEBHOOK_URL` (or the alert webhook if that is unset) only
+when something is broken, and stays quiet for `NOTIFY_COOLDOWN_HOURS` after
+it has complained once, so a long outage is one message rather than four a day.
+
+It catches the failures that are otherwise silent: a revoked Telegram session,
+a deleted Slack webhook, an image URL that stopped resolving, and a feed that
+has gone quiet for more than `STALE_HOURS`.
+
+```bash
+sudo tg-alert --health                 # run it by hand, prints a line per check
+sudo systemctl list-timers tg-alert-health.timer
+sudo journalctl -u tg-alert-health -n 20
+```
+
+The unit files live in `systemd/` in this repo but are installed by hand, on
+purpose: the deploy script does not touch systemd units, so push access to
+this repo cannot turn into root on the box.
+
+```bash
+scp systemd/*.service systemd/*.timer deploy@tg-alert.phantomstay.com:/tmp/
+ssh deploy@tg-alert.phantomstay.com \
+  'sudo install -m 644 -o root -g root /tmp/tg-alert-health.* /etc/systemd/system/ &&
+   sudo systemctl daemon-reload && sudo systemctl restart tg-alert-health.timer'
+```
+
+## Changing the Slack channel
+
+Create a new Incoming Webhook pointed at the channel you want, then:
+
+```bash
+ssh deploy@tg-alert.phantomstay.com
+sudo nano /etc/tg-alert/env      # edit SLACK_WEBHOOK_URL
+sudo systemctl restart tg-alert
+sudo tg-alert --test-post        # confirm it lands in the new channel
+```
+
+Alerts and health warnings can go to different channels: put the ops one in
+`SLACK_OPS_WEBHOOK_URL`.
+
 ## Shipping a change
 
 ```bash

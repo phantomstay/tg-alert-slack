@@ -1,0 +1,20 @@
+[Unit]
+Description=Health check for the flight alert bridge
+Documentation=https://github.com/phantomstay/tg-alert-slack
+
+[Service]
+Type=oneshot
+User=tgalert
+Group=tgalert
+WorkingDirectory=/opt/tg-alert
+EnvironmentFile=/etc/tg-alert/env
+ExecStart=/opt/tg-alert/.venv/bin/python -u /opt/tg-alert/run.py --health --notify
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tg-alert
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+SyslogIdentifier=tg-alert-health

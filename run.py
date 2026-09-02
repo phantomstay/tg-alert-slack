@@ -9,6 +9,8 @@ import argparse
 import os
 import sqlite3
 import sys
+import time
+from datetime import datetime, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -24,12 +26,18 @@ API_HASH = os.environ["TG_API_HASH"]
 SESSION = os.environ["TG_SESSION"]
 CHANNEL = int(os.environ["TG_CHANNEL_ID"])
 SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
+# where health failures go. Falls back to the alert channel if unset.
+OPS_WEBHOOK = os.getenv("SLACK_OPS_WEBHOOK_URL") or SLACK_WEBHOOK
 MAX_PRICE = int(os.getenv("MAX_PRICE") or 0) or None
 MIN_SEATS = int(os.getenv("MIN_SEATS") or 0) or None
 # absolute under systemd, relative when run by hand from the repo
 STATE_DB = os.getenv("STATE_DB", "state.db")
 # on start, re-read the last N posts so a restart or crash does not lose alerts
 CATCHUP = int(os.getenv("CATCHUP") or 20)
+# --health complains if the channel has posted nothing in this long
+STALE_HOURS = float(os.getenv("STALE_HOURS") or 48)
+# do not re-notify the ops channel more often than this while still broken
+NOTIFY_COOLDOWN_HOURS = float(os.getenv("NOTIFY_COOLDOWN_HOURS") or 12)
 
 db = sqlite3.connect(STATE_DB)
 db.execute("CREATE TABLE IF NOT EXISTS seen (chat_id INT, msg_id INT, PRIMARY KEY (chat_id, msg_id))")
@@ -47,11 +55,12 @@ def mark_sent(msg_id):
     db.commit()
 
 
-def post_to_slack(payload):
-    if not SLACK_WEBHOOK:
+def post_to_slack(payload, webhook=None):
+    webhook = webhook or SLACK_WEBHOOK
+    if not webhook:
         print("  (no SLACK_WEBHOOK_URL set, not sending)")
         return False
-    r = requests.post(SLACK_WEBHOOK, json=payload, timeout=10)
+    r = requests.post(webhook, json=payload, timeout=10)
     if r.status_code != 200:
         print(f"  slack error {r.status_code}: {r.text}", file=sys.stderr)
         return False
@@ -75,9 +84,18 @@ def handle(msg_id, text, send):
         mark_sent(msg_id)
 
 
-def health(client):
+def _notified_recently(path, cooldown_hours):
+    """True if we already sent an ops alert inside the cooldown window."""
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except FileNotFoundError:
+        return False
+    return age < cooldown_hours * 3600
+
+
+def health(client, notify=False):
     """Print a status line per dependency. Returns a process exit code."""
-    ok = True
+    checks = []   # (label, "OK" | "FAIL" | "WARN", detail)
 
     # run.py uses the async client, so these have to go through the loop.
     async def probe():
@@ -91,45 +109,81 @@ def health(client):
     try:
         with client:
             me, entity, last = client.loop.run_until_complete(probe())
-            print(f"  telegram session  OK    logged in as {me.first_name} (id {me.id})")
-            print(f"  channel access    OK    {entity.title!r}, latest post id {last.id if last else 'none'}")
+        checks.append(("telegram session", "OK", f"logged in as {me.first_name} (id {me.id})"))
+        checks.append(("channel access", "OK", f"{entity.title!r}, latest post id {last.id if last else 'none'}"))
+
+        # The quiet failure this exists to catch: the session is alive and the
+        # channel readable, but nothing has arrived in far too long.
+        if last and last.date:
+            hours = (datetime.now(timezone.utc) - last.date).total_seconds() / 3600
+            stale = hours > STALE_HOURS
+            checks.append((
+                "feed activity",
+                "FAIL" if stale else "OK",
+                f"last post {hours:.1f}h ago"
+                + (f", nothing for over {STALE_HOURS}h" if stale else ""),
+            ))
     except Exception as e:
-        print(f"  telegram          FAIL  {type(e).__name__}: {e}")
-        print("        the session was probably revoked. Re-run login.py and update /etc/tg-alert/env")
-        return 1
+        checks.append(("telegram", "FAIL", f"{type(e).__name__}: {e}"))
+        checks.append(("", "", "the session was probably revoked. Re-run login.py "
+                               "and update /etc/tg-alert/env"))
 
     if not SLACK_WEBHOOK:
-        print("  slack webhook     FAIL  SLACK_WEBHOOK_URL is not set")
-        ok = False
+        checks.append(("slack webhook", "FAIL", "SLACK_WEBHOOK_URL is not set"))
     else:
         # An empty payload is rejected with invalid_payload, which still proves
         # the webhook exists. A dead webhook answers 404 no_service instead.
-        r = requests.post(SLACK_WEBHOOK, json={}, timeout=10)
-        if "no_service" in r.text or r.status_code == 404:
-            print(f"  slack webhook     FAIL  {r.status_code} {r.text.strip()}, the webhook was deleted")
-            ok = False
-        else:
-            print(f"  slack webhook     OK    reachable ({r.status_code} {r.text.strip()})")
+        try:
+            r = requests.post(SLACK_WEBHOOK, json={}, timeout=10)
+            dead = r.status_code == 404 or "no_service" in r.text
+            checks.append(("slack webhook", "FAIL" if dead else "OK",
+                           f"{r.status_code} {r.text.strip()}"
+                           + (", the webhook was deleted" if dead else " (reachable)")))
+        except Exception as e:
+            checks.append(("slack webhook", "FAIL", f"{type(e).__name__}: {e}"))
 
     image = alerts.image_for({"aircraft": None})
     if not image:
-        print("  alert image       none  no ALERT_IMAGE_URL set, cards will post without a photo")
+        checks.append(("alert image", "WARN", "no ALERT_IMAGE_URL set, cards post without a photo"))
     else:
         try:
             r = requests.head(image, timeout=10, allow_redirects=True)
             ctype = r.headers.get("content-type", "?")
             good = r.status_code == 200 and ctype.startswith("image/")
-            print(f"  alert image       {'OK   ' if good else 'FAIL '} {r.status_code} {ctype} {image}")
-            ok = ok and good
+            checks.append(("alert image", "OK" if good else "FAIL",
+                           f"{r.status_code} {ctype} {image}"))
         except Exception as e:
-            print(f"  alert image       FAIL  {type(e).__name__}: {e}")
-            ok = False
+            checks.append(("alert image", "FAIL", f"{type(e).__name__}: {e}"))
 
     n = db.execute("SELECT COUNT(*) FROM seen WHERE chat_id=?", (CHANNEL,)).fetchone()[0]
-    print(f"  dedupe db         OK    {STATE_DB}, {n} alerts recorded for this channel")
+    checks.append(("dedupe db", "OK", f"{STATE_DB}, {n} alerts recorded for this channel"))
 
-    print("\nall good" if ok else "\nsomething is broken, see FAIL above")
-    return 0 if ok else 1
+    for label, status, detail in checks:
+        print(f"  {label:<17} {status:<5} {detail}" if label else f"        {detail}")
+
+    failures = [(l, d) for l, st, d in checks if st == "FAIL"]
+    print("\nall good" if not failures else "\nsomething is broken, see FAIL above")
+
+    if failures and notify:
+        stamp = os.path.join(os.path.dirname(os.path.abspath(STATE_DB)), "last-alert-notice")
+        if _notified_recently(stamp, NOTIFY_COOLDOWN_HOURS):
+            print(f"(ops already notified within {NOTIFY_COOLDOWN_HOURS}h, staying quiet)")
+        else:
+            lines = "\n".join(f"• *{l}* {d}" for l, d in failures)
+            sent = post_to_slack({
+                "text": "Flight alert bridge is unhealthy",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn",
+                     "text": f":rotating_light: *Flight alert bridge is unhealthy*\n{lines}"}},
+                    {"type": "context", "elements": [{"type": "mrkdwn",
+                     "text": "`ssh deploy@tg-alert.phantomstay.com` then `sudo tg-alert --health`"}]},
+                ],
+            }, OPS_WEBHOOK)
+            if sent:
+                open(stamp, "w").close()
+                print("ops channel notified")
+
+    return 0 if not failures else 1
 
 
 def main():
@@ -138,6 +192,8 @@ def main():
     ap.add_argument("--send", action="store_true", help="actually post to Slack")
     ap.add_argument("--health", action="store_true",
                     help="check the telegram session, channel access and slack webhook, then exit")
+    ap.add_argument("--notify", action="store_true",
+                    help="with --health, post failures to SLACK_OPS_WEBHOOK_URL; used by the timer")
     ap.add_argument("--test-post", action="store_true",
                     help="post one clearly-marked test card to slack to prove the chain works")
     ap.add_argument("--mark-seen", type=int, metavar="N",
@@ -148,7 +204,7 @@ def main():
     client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
     if args.health:
-        sys.exit(health(client))
+        sys.exit(health(client, notify=args.notify))
 
     if args.test_post:
         alert = alerts.parse(

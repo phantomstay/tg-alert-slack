@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the flight alert bridge health check every 6 hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
