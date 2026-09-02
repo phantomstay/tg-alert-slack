@@ -26,8 +26,12 @@ CHANNEL = int(os.environ["TG_CHANNEL_ID"])
 SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
 MAX_PRICE = int(os.getenv("MAX_PRICE") or 0) or None
 MIN_SEATS = int(os.getenv("MIN_SEATS") or 0) or None
+# absolute under systemd, relative when run by hand from the repo
+STATE_DB = os.getenv("STATE_DB", "state.db")
+# on start, re-read the last N posts so a restart or crash does not lose alerts
+CATCHUP = int(os.getenv("CATCHUP") or 20)
 
-db = sqlite3.connect("state.db")
+db = sqlite3.connect(STATE_DB)
 db.execute("CREATE TABLE IF NOT EXISTS seen (chat_id INT, msg_id INT, PRIMARY KEY (chat_id, msg_id))")
 db.commit()
 
@@ -75,9 +79,22 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill", type=int, metavar="N", help="parse the last N posts and exit")
     ap.add_argument("--send", action="store_true", help="actually post to Slack")
+    ap.add_argument("--mark-seen", type=int, metavar="N",
+                    help="mark the last N posts as already sent without posting them; "
+                         "use once on a fresh install so startup catch-up stays quiet")
     args = ap.parse_args()
 
     client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+
+    if args.mark_seen:
+        n = 0
+        with client:
+            for m in client.iter_messages(CHANNEL, limit=args.mark_seen):
+                if alerts.parse(m.message):
+                    mark_sent(m.id)
+                    n += 1
+        print(f"marked {n} existing alerts as seen in {STATE_DB}")
+        return
 
     if args.backfill:
         with client:
@@ -89,8 +106,15 @@ def main():
     async def _(event):
         handle(event.message.id, event.message.message, True)
 
-    print(f"Listening to channel {CHANNEL}. Ctrl+C to stop.")
     with client:
+        # Anything posted while we were down. Dedupe makes this safe to repeat,
+        # and it covers the race where a post lands mid-catchup.
+        if CATCHUP:
+            print(f"Catching up on the last {CATCHUP} posts...", flush=True)
+            for m in reversed(list(client.iter_messages(CHANNEL, limit=CATCHUP))):
+                handle(m.id, m.message, True)
+
+        print(f"Listening to channel {CHANNEL}. Ctrl+C to stop.", flush=True)
         client.run_until_disconnected()
 
 
