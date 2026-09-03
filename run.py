@@ -7,10 +7,12 @@ Watch a Telegram channel and mirror flight alerts into Slack.
 """
 import argparse
 import os
+import smtplib
 import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
+from email.message import EmailMessage
 
 import requests
 from dotenv import load_dotenv
@@ -26,8 +28,16 @@ API_HASH = os.environ["TG_API_HASH"]
 SESSION = os.environ["TG_SESSION"]
 CHANNEL = int(os.environ["TG_CHANNEL_ID"])
 SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
-# where health failures go. Falls back to the alert channel if unset.
-OPS_WEBHOOK = os.getenv("SLACK_OPS_WEBHOOK_URL") or SLACK_WEBHOOK
+# Where health failures go: email first if SMTP is set up, otherwise a separate
+# ops webhook. Deliberately no fallback to SLACK_WEBHOOK. The alert channel is
+# for flights, and ops noise in there just teaches people to scroll past it.
+OPS_WEBHOOK = os.getenv("SLACK_OPS_WEBHOOK_URL")
+OPS_EMAIL_TO = os.getenv("OPS_EMAIL_TO")
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT") or 587)
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASS = os.getenv("SMTP_PASS")
+OPS_EMAIL_FROM = os.getenv("OPS_EMAIL_FROM") or SMTP_USER
 MAX_PRICE = int(os.getenv("MAX_PRICE") or 0) or None
 MIN_SEATS = int(os.getenv("MIN_SEATS") or 0) or None
 # absolute under systemd, relative when run by hand from the repo
@@ -82,6 +92,64 @@ def handle(msg_id, text, send):
     print(f"[{msg_id}] {payload['text']}")
     if send and post_to_slack(payload):
         mark_sent(msg_id)
+
+
+def send_ops_email(subject, body):
+    """Mail the ops address over SMTP. Returns True if it actually went out."""
+    if not (OPS_EMAIL_TO and SMTP_HOST and SMTP_USER and SMTP_PASS):
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = OPS_EMAIL_FROM
+    msg["To"] = OPS_EMAIL_TO
+    msg.set_content(body)
+    try:
+        # 465 is implicit TLS, 587 upgrades with STARTTLS
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
+                smtp.login(SMTP_USER, SMTP_PASS)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
+                smtp.starttls()
+                smtp.login(SMTP_USER, SMTP_PASS)
+                smtp.send_message(msg)
+        return True
+    except Exception as e:
+        # a broken mailbox must not turn a warning into a crash
+        print(f"  email failed: {e}")
+        return False
+
+
+def notify_ops(failures):
+    """Send the failure list wherever ops alerts are configured to go."""
+    plain = "\n".join(f"- {label}: {detail}" for label, detail in failures)
+    if send_ops_email("Flight alert bridge is unhealthy", (
+        "The Telegram to Slack flight alert bridge failed its health check.\n\n"
+        f"{plain}\n\n"
+        "To look into it:\n"
+        "  ssh deploy@tg-alert.phantomstay.com\n"
+        "  sudo tg-alert --health\n"
+    )):
+        print(f"emailed {OPS_EMAIL_TO}")
+        return True
+
+    if OPS_WEBHOOK:
+        lines = "\n".join(f"\u2022 *{label}* {detail}" for label, detail in failures)
+        if post_to_slack({
+            "text": "Flight alert bridge is unhealthy",
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn",
+                 "text": f":rotating_light: *Flight alert bridge is unhealthy*\n{lines}"}},
+                {"type": "context", "elements": [{"type": "mrkdwn",
+                 "text": "`ssh deploy@tg-alert.phantomstay.com` then `sudo tg-alert --health`"}]},
+            ],
+        }, OPS_WEBHOOK):
+            print("ops channel notified")
+            return True
+
+    print("no ops destination configured, set OPS_EMAIL_TO or SLACK_OPS_WEBHOOK_URL")
+    return False
 
 
 def _notified_recently(path, cooldown_hours):
@@ -169,19 +237,8 @@ def health(client, notify=False):
         if _notified_recently(stamp, NOTIFY_COOLDOWN_HOURS):
             print(f"(ops already notified within {NOTIFY_COOLDOWN_HOURS}h, staying quiet)")
         else:
-            lines = "\n".join(f"• *{l}* {d}" for l, d in failures)
-            sent = post_to_slack({
-                "text": "Flight alert bridge is unhealthy",
-                "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn",
-                     "text": f":rotating_light: *Flight alert bridge is unhealthy*\n{lines}"}},
-                    {"type": "context", "elements": [{"type": "mrkdwn",
-                     "text": "`ssh deploy@tg-alert.phantomstay.com` then `sudo tg-alert --health`"}]},
-                ],
-            }, OPS_WEBHOOK)
-            if sent:
+            if notify_ops(failures):
                 open(stamp, "w").close()
-                print("ops channel notified")
 
     return 0 if not failures else 1
 
@@ -193,7 +250,7 @@ def main():
     ap.add_argument("--health", action="store_true",
                     help="check the telegram session, channel access and slack webhook, then exit")
     ap.add_argument("--notify", action="store_true",
-                    help="with --health, post failures to SLACK_OPS_WEBHOOK_URL; used by the timer")
+                    help="with --health, email or post the failures to ops; used by the timer")
     ap.add_argument("--test-post", action="store_true",
                     help="post one clearly-marked test card to slack to prove the chain works")
     ap.add_argument("--mark-seen", type=int, metavar="N",
