@@ -41,31 +41,37 @@ dedupe table stops it repeating what already went out.
 
 ## Monitoring
 
-`tg-alert-health.timer` runs `run.py --health --notify` every 6 hours. It
-posts to `SLACK_OPS_WEBHOOK_URL` (or the alert webhook if that is unset) only
-when something is broken, and stays quiet for `NOTIFY_COOLDOWN_HOURS` after
-it has complained once, so a long outage is one message rather than four a day.
+`tg-alert-health.timer` runs every 6 hours and checks the Telegram session,
+channel access, how long since the last channel post, the Slack webhook, the
+image host and the dedupe DB.
 
-It catches the failures that are otherwise silent: a revoked Telegram session,
-a deleted Slack webhook, an image URL that stopped resolving, and a feed that
-has gone quiet for more than `STALE_HOURS`.
+Failures go to **email**, never to the flight alert channel. Ops noise in a
+deals channel just teaches people to scroll past it. Set in `/etc/tg-alert/env`:
 
-```bash
-sudo tg-alert --health                 # run it by hand, prints a line per check
-sudo systemctl list-timers tg-alert-health.timer
-sudo journalctl -u tg-alert-health -n 20
-```
+    OPS_EMAIL_TO=dev@phantomstay.com
+    SMTP_HOST=smtp.gmail.com
+    SMTP_PORT=587
+    SMTP_USER=dev@phantomstay.com
+    SMTP_PASS=<google app password, 16 chars, no spaces>
 
-The unit files live in `systemd/` in this repo but are installed by hand, on
-purpose: the deploy script does not touch systemd units, so push access to
-this repo cannot turn into root on the box.
+The mailbox is Google Workspace, so `SMTP_PASS` is an app password from
+https://myaccount.google.com/apppasswords, not the account password. It needs
+2-Step Verification on that account first.
 
-```bash
-scp systemd/*.service systemd/*.timer deploy@tg-alert.phantomstay.com:/tmp/
-ssh deploy@tg-alert.phantomstay.com \
-  'sudo install -m 644 -o root -g root /tmp/tg-alert-health.* /etc/systemd/system/ &&
-   sudo systemctl daemon-reload && sudo systemctl restart tg-alert-health.timer'
-```
+`SLACK_OPS_WEBHOOK_URL` still works as an alternative if you would rather have a
+separate ops channel. Email wins if both are set. With neither, failures are
+only written to the journal.
+
+Repeat notifications are suppressed for `NOTIFY_COOLDOWN_HOURS` (default 12), so
+a week-long outage is one message rather than twenty-eight.
+
+`STALE_HOURS` (default 48) is how long the channel can go quiet before that
+counts as a failure. Production runs 96, because PJ Flight Alerts routinely goes
+two days without posting.
+
+Check by hand:
+
+    sudo tg-alert --health
 
 ## Changing the Slack channel
 
