@@ -33,6 +33,9 @@ SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
 # for flights, and ops noise in there just teaches people to scroll past it.
 OPS_WEBHOOK = os.getenv("SLACK_OPS_WEBHOOK_URL")
 OPS_EMAIL_TO = os.getenv("OPS_EMAIL_TO")
+# DigitalOcean blocks outbound 25/465/587, so on that host mail has to go over
+# HTTPS. Set RESEND_API_KEY and SMTP is not used at all.
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT") or 587)
 SMTP_USER = os.getenv("SMTP_USER")
@@ -114,8 +117,31 @@ def handle(msg_id, text, send, force=False):
 
 
 def send_ops_email(subject, body):
-    """Mail the ops address over SMTP. Returns True if it actually went out."""
-    if not (OPS_EMAIL_TO and SMTP_HOST and SMTP_USER and SMTP_PASS):
+    """Mail the ops address. Returns True if it actually went out."""
+    if not OPS_EMAIL_TO:
+        return False
+
+    if RESEND_API_KEY:
+        try:
+            r = requests.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                json={
+                    "from": OPS_EMAIL_FROM or "onboarding@resend.dev",
+                    "to": [OPS_EMAIL_TO],
+                    "subject": subject,
+                    "text": body,
+                },
+                timeout=15,
+            )
+            if r.status_code < 300:
+                return True
+            print(f"  resend error {r.status_code}: {r.text}")
+        except Exception as e:
+            print(f"  resend failed: {e}")
+        return False
+
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASS):
         return False
     msg = EmailMessage()
     msg["Subject"] = subject

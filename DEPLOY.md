@@ -48,15 +48,27 @@ image host and the dedupe DB.
 Failures go to **email**, never to the flight alert channel. Ops noise in a
 deals channel just teaches people to scroll past it. Set in `/etc/tg-alert/env`:
 
-    OPS_EMAIL_TO=dev@phantomstay.com
-    SMTP_HOST=smtp.gmail.com
-    SMTP_PORT=587
-    SMTP_USER=dev@phantomstay.com
-    SMTP_PASS=<google app password, 16 chars, no spaces>
+    OPS_EMAIL_TO=sudipta.just@gmail.com
+    RESEND_API_KEY=<key from resend.com>
+    OPS_EMAIL_FROM=onboarding@resend.dev
 
-The mailbox is Google Workspace, so `SMTP_PASS` is an app password from
-https://myaccount.google.com/apppasswords, not the account password. It needs
-2-Step Verification on that account first.
+**Do not try to use SMTP on this droplet.** DigitalOcean blocks outbound 25,
+465 and 587 by default, so every SMTP provider times out. Verified:
+
+    smtp.gmail.com:587        TimeoutError
+    smtp.resend.com:587       TimeoutError
+    smtp-relay.brevo.com:587  TimeoutError
+    api.resend.com:443        OK
+
+The failure surfaces as `[Errno 101] Network is unreachable`, which is
+misleading. The droplet has no IPv6 route, Python tries IPv6 last, and that
+error hides the real IPv4 timeout. Mail therefore goes over HTTPS via the
+Resend API. The `SMTP_*` keys still work if this ever moves to a host that
+permits SMTP.
+
+`onboarding@resend.dev` sends without verifying a domain but only delivers to
+the address that owns the Resend account. To send anywhere else, verify
+phantomstay.com in Resend and set `OPS_EMAIL_FROM=alerts@phantomstay.com`.
 
 `SLACK_OPS_WEBHOOK_URL` still works as an alternative if you would rather have a
 separate ops channel. Email wins if both are set. With neither, failures are
