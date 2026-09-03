@@ -65,26 +65,45 @@ def mark_sent(msg_id):
     db.commit()
 
 
+_last_post = 0.0
+
+
 def post_to_slack(payload, webhook=None):
+    global _last_post
     webhook = webhook or SLACK_WEBHOOK
     if not webhook:
         print("  (no SLACK_WEBHOOK_URL set, not sending)")
         return False
-    r = requests.post(webhook, json=payload, timeout=10)
-    if r.status_code != 200:
+
+    for attempt in range(3):
+        # incoming webhooks allow roughly one message a second, and a backfill
+        # sends twenty in a row
+        wait = 1.2 - (time.monotonic() - _last_post)
+        if wait > 0:
+            time.sleep(wait)
+        r = requests.post(webhook, json=payload, timeout=10)
+        _last_post = time.monotonic()
+
+        if r.status_code == 200:
+            return True
+        if r.status_code == 429 and attempt < 2:
+            retry = float(r.headers.get("Retry-After") or 1)
+            print(f"  rate limited, waiting {retry}s")
+            time.sleep(retry)
+            continue
         print(f"  slack error {r.status_code}: {r.text}", file=sys.stderr)
         return False
-    return True
+    return False
 
 
-def handle(msg_id, text, send):
+def handle(msg_id, text, send, force=False):
     alert = alerts.parse(text)
     if not alert:
         return
     if not alerts.passes_filters(alert, MAX_PRICE, MIN_SEATS):
         print(f"[{msg_id}] filtered out: {alert['route']} ${alert['price']}")
         return
-    if already_sent(msg_id):
+    if already_sent(msg_id) and not force:
         print(f"[{msg_id}] already sent, skipping")
         return
 
@@ -247,6 +266,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill", type=int, metavar="N", help="parse the last N posts and exit")
     ap.add_argument("--send", action="store_true", help="actually post to Slack")
+    ap.add_argument("--force", action="store_true",
+                    help="with --backfill --send, repost alerts already in the dedupe db")
     ap.add_argument("--health", action="store_true",
                     help="check the telegram session, channel access and slack webhook, then exit")
     ap.add_argument("--notify", action="store_true",
@@ -299,8 +320,9 @@ def main():
 
     if args.backfill:
         with client:
-            for m in client.iter_messages(CHANNEL, limit=args.backfill):
-                handle(m.id, m.message, args.send)
+            # oldest first, so the channel reads top to bottom in real order
+            for m in reversed(list(client.iter_messages(CHANNEL, limit=args.backfill))):
+                handle(m.id, m.message, args.send, force=args.force)
         return
 
     @client.on(events.NewMessage(chats=CHANNEL))
