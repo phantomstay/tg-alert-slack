@@ -251,12 +251,19 @@ def main():
                     help="check the telegram session, channel access and slack webhook, then exit")
     ap.add_argument("--notify", action="store_true",
                     help="with --health, email or post the failures to ops; used by the timer")
+    ap.add_argument("--test-notify", action="store_true",
+                    help="send a fake health failure to the ops destination to prove it works")
     ap.add_argument("--test-post", action="store_true",
                     help="post one clearly-marked test card to slack to prove the chain works")
     ap.add_argument("--mark-seen", type=int, metavar="N",
                     help="mark the last N posts as already sent without posting them; "
                          "use once on a fresh install so startup catch-up stays quiet")
     args = ap.parse_args()
+
+    if args.test_notify:
+        # ignores the cooldown on purpose, this is for proving delivery
+        ok = notify_ops([("test", "this is a test, nothing is actually wrong")])
+        sys.exit(0 if ok else 1)
 
     client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
