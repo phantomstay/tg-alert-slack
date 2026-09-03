@@ -7,9 +7,11 @@ Watch a Telegram channel and mirror flight alerts into Slack.
 """
 import argparse
 import os
+import queue
 import smtplib
 import sqlite3
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -45,14 +47,17 @@ MAX_PRICE = int(os.getenv("MAX_PRICE") or 0) or None
 MIN_SEATS = int(os.getenv("MIN_SEATS") or 0) or None
 # absolute under systemd, relative when run by hand from the repo
 STATE_DB = os.getenv("STATE_DB", "state.db")
-# on start, re-read the last N posts so a restart or crash does not lose alerts
+# on start, re-read the last N posts so a restart or crash does not lose alerts.
+# Only used the first time; after that we catch up from the last id we posted.
 CATCHUP = int(os.getenv("CATCHUP") or 20)
+# ceiling on that, so a long outage cannot dump thousands of cards at once
+CATCHUP_MAX = int(os.getenv("CATCHUP_MAX") or 200)
 # --health complains if the channel has posted nothing in this long
 STALE_HOURS = float(os.getenv("STALE_HOURS") or 48)
 # do not re-notify the ops channel more often than this while still broken
 NOTIFY_COOLDOWN_HOURS = float(os.getenv("NOTIFY_COOLDOWN_HOURS") or 12)
 
-db = sqlite3.connect(STATE_DB)
+db = sqlite3.connect(STATE_DB, check_same_thread=False)
 db.execute("CREATE TABLE IF NOT EXISTS seen (chat_id INT, msg_id INT, PRIMARY KEY (chat_id, msg_id))")
 db.commit()
 
@@ -359,16 +364,42 @@ def main():
                 handle(m.id, m.message, args.send, force=args.force)
         return
 
+    # Posting to Slack is blocking and paced at about one a second. Doing that
+    # inline would stall Telethon's event loop for the length of a bulk drop and
+    # cost us the connection, so the handler only enqueues.
+    work = queue.Queue()
+
+    def worker():
+        while True:
+            msg_id, text = work.get()
+            try:
+                handle(msg_id, text, True)
+            except Exception as e:
+                print(f"[{msg_id}] failed to post: {e}", file=sys.stderr)
+            finally:
+                work.task_done()
+
+    threading.Thread(target=worker, daemon=True).start()
+
     @client.on(events.NewMessage(chats=CHANNEL))
     async def _(event):
-        handle(event.message.id, event.message.message, True)
+        work.put((event.message.id, event.message.message))
 
     with client:
         # Anything posted while we were down. Dedupe makes this safe to repeat,
         # and it covers the race where a post lands mid-catchup.
-        if CATCHUP:
-            print(f"Catching up on the last {CATCHUP} posts...", flush=True)
-            for m in reversed(list(client.iter_messages(CHANNEL, limit=CATCHUP))):
+        last_seen = db.execute(
+            "SELECT MAX(msg_id) FROM seen WHERE chat_id=?", (CHANNEL,)
+        ).fetchone()[0]
+        if last_seen:
+            # everything since the last alert we actually sent, not a fixed
+            # window, so a burst bigger than CATCHUP cannot fall through the gap
+            missed = list(client.iter_messages(CHANNEL, min_id=last_seen, limit=CATCHUP_MAX))
+        else:
+            missed = list(client.iter_messages(CHANNEL, limit=CATCHUP))
+        if missed:
+            print(f"Catching up on {len(missed)} posts...", flush=True)
+            for m in reversed(missed):
                 handle(m.id, m.message, True)
 
         print(f"Listening to channel {CHANNEL}. Ctrl+C to stop.", flush=True)
