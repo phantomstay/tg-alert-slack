@@ -193,7 +193,15 @@ def notify_ops(failures):
             print("ops channel notified")
             return True
 
-    print("no ops destination configured, set OPS_EMAIL_TO or SLACK_OPS_WEBHOOK_URL")
+    # say which piece is actually missing, not just "something"
+    if not OPS_EMAIL_TO:
+        print("nowhere to send this: set OPS_EMAIL_TO or SLACK_OPS_WEBHOOK_URL")
+    elif not (RESEND_API_KEY or (SMTP_HOST and SMTP_USER and SMTP_PASS)):
+        print(f"OPS_EMAIL_TO is {OPS_EMAIL_TO} but there is no way to send mail: "
+              "set RESEND_API_KEY, or SMTP_HOST/SMTP_USER/SMTP_PASS on a host "
+              "that allows outbound SMTP")
+    else:
+        print("the mail attempt failed, see the error above")
     return False
 
 
