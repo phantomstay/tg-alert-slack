@@ -99,7 +99,12 @@ sudo tg-alert --test-notify                # prove the ops email path works
 sudo tg-alert --backfill 20 --send --force # repost the last 20, ignoring dedupe
 sudo tg-alert --mark-seen 40               # mark existing posts seen, post nothing
 sudo tg-alert --check-images --scan 300    # every aircraft photo reachable? any type unmapped?
+sudo tg-alert --replay 2026-09-01          # print that day's cards; add --send to post them
 ```
+
+`--replay` reposts one past day's alerts with a "not a bookable flight" banner on
+each card. It is how you prove a change from the server without waiting for the
+channel to post something.
 
 `--force` exists because `--mark-seen` puts message ids in the dedupe DB. Without
 it a backfill prints "already sent, skipping" and posts nothing.

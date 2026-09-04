@@ -13,7 +13,7 @@ import sqlite3
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
 import requests
@@ -301,6 +301,41 @@ def health(client, notify=False):
     return 0 if not failures else 1
 
 
+def replay(client, day, send):
+    """Repost one day's alerts, each marked as a replay.
+
+    For proving a change end to end from the server without waiting for the
+    channel to post something. Every card carries a banner saying it is not
+    bookable, because the flights are by definition in the past.
+    """
+    start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+
+    rows = []
+    with client:
+        # iter_messages walks backwards from offset_date, so start at midnight
+        # after the day we want and stop once we fall off the front of it
+        for m in client.iter_messages(CHANNEL, offset_date=end):
+            if not m.date or m.date.astimezone(timezone.utc) < start:
+                break
+            alert = alerts.parse(m.message)
+            if alert:
+                rows.append((m.id, alert))
+    rows.reverse()   # oldest first, so the channel reads in real order
+
+    print(f"{len(rows)} alerts on {day}" + ("" if send else ", dry run, add --send"))
+    for msg_id, alert in rows:
+        payload = alerts.to_slack(alert)
+        payload["blocks"].insert(0, {"type": "context", "elements": [{"type": "mrkdwn",
+            "text": f":wrench: *replay of {day}, not a bookable flight*"}]})
+        image = alerts.image_for(alert) or "no photo"
+        print(f"[{msg_id}] {(alert['aircraft'] or '?'):6} "
+              f"{alert['route'][:48]:50} -> {image.rsplit('/', 1)[-1]}")
+        if send:
+            print("      sent" if post_to_slack(payload) else "      FAILED")
+    return 0
+
+
 def check_images(client=None, scan=0):
     """HEAD every image in aircraft_images.json and report what is missing.
 
@@ -362,6 +397,9 @@ def main():
                     help="send a fake health failure to the ops destination to prove it works")
     ap.add_argument("--test-post", action="store_true",
                     help="post one clearly-marked test card to slack to prove the chain works")
+    ap.add_argument("--replay", metavar="YYYY-MM-DD",
+                    help="repost one day's alerts, each marked as a replay; "
+                         "prints only unless --send is given too")
     ap.add_argument("--check-images", action="store_true",
                     help="check every photo in aircraft_images.json is actually reachable")
     ap.add_argument("--scan", type=int, default=0, metavar="N",
@@ -378,6 +416,13 @@ def main():
         sys.exit(0 if ok else 1)
 
     client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+
+    if args.replay:
+        try:
+            day = datetime.strptime(args.replay, "%Y-%m-%d").date()
+        except ValueError:
+            sys.exit(f"--replay wants YYYY-MM-DD, got {args.replay!r}")
+        sys.exit(replay(client, day, args.send))
 
     if args.check_images:
         sys.exit(check_images(client, args.scan))

@@ -128,6 +128,18 @@ Then check nothing is 404ing:
 sudo tg-alert --check-images --scan 300
 ```
 
+> **Known bug in `/usr/local/bin/tg-alert-deploy`.** The assets stanza publishes
+> `$APP/assets/*.png` only, and swallows the error, so every `.jpg` in the repo
+> is silently skipped on deploy. The photos are in the web root because they were
+> installed by hand; a rebuild from scratch would lose them. Fix with:
+>
+> ```bash
+> sudo cp -a /usr/local/bin/tg-alert-deploy /usr/local/bin/tg-alert-deploy.bak
+> sudoedit /usr/local/bin/tg-alert-deploy
+> # replace:  sudo install -m 644 -o root -g root $APP/assets/*.png $WEB/ 2>/dev/null || true
+> # with:     sudo install -m 644 -o root -g root $APP/assets/* $WEB/
+> ```
+
 That HEADs every photo in the map and lists any aircraft type seen in the last
 300 posts that has no photo of its own. Anything unmatched falls back to
 `ALERT_IMAGE_URL`, which is why a missing photo is easy to miss: the card still
