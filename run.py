@@ -369,10 +369,7 @@ def check_images(client=None, scan=0):
                 alert = alerts.parse(m.message)
                 if alert and alert["aircraft"]:
                     seen[alert["aircraft"]] = seen.get(alert["aircraft"], 0) + 1
-        unmapped = {
-            t: n for t, n in seen.items()
-            if alerts.image_for({"aircraft": t}) in (None, fallback)
-        }
+        unmapped = {t: n for t, n in seen.items() if not alerts.mapped_image(t)}
         print(f"\naircraft types in the last {scan} posts: {len(seen)}")
         for t, n in sorted(seen.items(), key=lambda kv: -kv[1]):
             mark = "  no image" if t in unmapped else ""

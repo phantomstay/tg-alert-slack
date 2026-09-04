@@ -58,8 +58,8 @@ def _load_image_map():
 IMAGE_MAP = _load_image_map()
 
 
-def image_for(alert):
-    """Pick the photo for this alert.
+def mapped_image(aircraft):
+    """The photo this aircraft type is mapped to, or None if it isn't mapped.
 
     The channel posts short type codes ("GLEX", "CL350", "C56P"), so an exact
     match on the whole Aircraft Type is tried first. Only if that misses do we
@@ -67,23 +67,31 @@ def image_for(alert):
     "Bombardier Global 7500" need. Substring matching alone is wrong for codes:
     "L600" sits inside "L6000", and a near-miss puts the wrong jet on the card.
 
-    Placeholder entries (anything containing REPLACE-ME) are ignored, so an
-    unfilled aircraft_images.json falls through to ALERT_IMAGE_URL instead of
-    handing Slack a URL it can't fetch.
+    Placeholder entries (anything containing REPLACE-ME) count as unmapped, so
+    an unfilled aircraft_images.json falls through to ALERT_IMAGE_URL instead
+    of handing Slack a URL it can't fetch.
+
+    Kept separate from image_for so callers can tell a real mapping from the
+    fallback. Comparing urls does not work: ALERT_IMAGE_URL is currently the
+    Global Express photo, which is also what GLEX is legitimately mapped to.
     """
-    aircraft = (alert.get("aircraft") or "").lower().strip()
-    if aircraft:
-        url = IMAGE_MAP.get(aircraft)
-        if url and "REPLACE-ME" not in url:
-            return url
-        matches = [
-            (frag, url) for frag, url in IMAGE_MAP.items()
-            if frag and frag in aircraft and "REPLACE-ME" not in url
-        ]
-        if matches:
-            return max(matches, key=lambda m: len(m[0]))[1]
-    # read at call time, not import time: run.py imports us before load_dotenv()
-    return os.getenv("ALERT_IMAGE_URL") or None
+    aircraft = (aircraft or "").lower().strip()
+    if not aircraft:
+        return None
+    url = IMAGE_MAP.get(aircraft)
+    if url and "REPLACE-ME" not in url:
+        return url
+    matches = [
+        (frag, url) for frag, url in IMAGE_MAP.items()
+        if frag and frag in aircraft and "REPLACE-ME" not in url
+    ]
+    return max(matches, key=lambda m: len(m[0]))[1] if matches else None
+
+
+def image_for(alert):
+    """The photo to put on this alert's card, falling back to ALERT_IMAGE_URL."""
+    # env read at call time, not import time: run.py imports us before load_dotenv()
+    return mapped_image(alert.get("aircraft")) or os.getenv("ALERT_IMAGE_URL") or None
 
 
 def mapped_images():
