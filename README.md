@@ -81,7 +81,7 @@ us the connection.
 | `run.py` | connects, catches up, filters, de-dupes, posts, health checks |
 | `alerts.py` | parses an alert into fields, renders the Slack Block Kit card |
 | `login.py` | one-time login, prints session string and channel ids |
-| `aircraft_images.json` | aircraft name fragment to photo URL, longest match wins |
+| `aircraft_images.json` | aircraft type code to photo URL, exact match then longest fragment |
 | `assets/` | the photos Caddy serves at `tg-alert.phantomstay.com/assets/` |
 | `systemd/` | the health check service and its timer |
 | `.github/workflows/deploy.yml` | lint, parser test, secret guard, then deploy |
@@ -98,6 +98,7 @@ sudo tg-alert --test-post                  # one card marked "test, not a real f
 sudo tg-alert --test-notify                # prove the ops email path works
 sudo tg-alert --backfill 20 --send --force # repost the last 20, ignoring dedupe
 sudo tg-alert --mark-seen 40               # mark existing posts seen, post nothing
+sudo tg-alert --check-images --scan 300    # every aircraft photo reachable? any type unmapped?
 ```
 
 `--force` exists because `--mark-seen` puts message ids in the dedupe DB. Without

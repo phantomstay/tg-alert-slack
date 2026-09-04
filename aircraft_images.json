@@ -1,5 +1,37 @@
 {
+  "_comment": "Key is matched against the alert's Aircraft Type. The PJX channel posts short type codes (GLEX, CL350, L650...), so those are the keys that actually fire; the full-name keys are aliases in case the feed ever spells a type out. Exact match wins, then the longest matching fragment. Unmatched types fall back to ALERT_IMAGE_URL.",
+
+  "cl350": "https://tg-alert.phantomstay.com/assets/challenger-350.jpg",
+  "cl604": "https://tg-alert.phantomstay.com/assets/challenger-604.jpg",
+  "cl605": "https://tg-alert.phantomstay.com/assets/challenger-605.jpg",
+  "cl850": "https://tg-alert.phantomstay.com/assets/challenger-850.jpg",
+
+  "glex": "https://tg-alert.phantomstay.com/assets/global-express.png",
+  "gl7t": "https://tg-alert.phantomstay.com/assets/global-7500.jpg",
+  "gl8t": "https://tg-alert.phantomstay.com/assets/global-8000.jpg",
+
+  "l600": "https://tg-alert.phantomstay.com/assets/legacy-600.jpg",
+  "l650": "https://tg-alert.phantomstay.com/assets/legacy-650.jpg",
+  "l1000": "https://tg-alert.phantomstay.com/assets/lineage-1000.jpg",
+
+  "c56x": "https://tg-alert.phantomstay.com/assets/citation-xls.jpg",
+  "c56p": "https://tg-alert.phantomstay.com/assets/citation-xls-plus.jpg",
+
+  "fa7x": "https://tg-alert.phantomstay.com/assets/falcon-7x.jpg",
+
+  "challenger 350": "https://tg-alert.phantomstay.com/assets/challenger-350.jpg",
+  "challenger 604": "https://tg-alert.phantomstay.com/assets/challenger-604.jpg",
+  "challenger 605": "https://tg-alert.phantomstay.com/assets/challenger-605.jpg",
+  "challenger 850": "https://tg-alert.phantomstay.com/assets/challenger-850.jpg",
   "global express": "https://tg-alert.phantomstay.com/assets/global-express.png",
   "global 6000": "https://tg-alert.phantomstay.com/assets/global-express.png",
-  "global 7500": "https://tg-alert.phantomstay.com/assets/global-express.png"
+  "global 7500": "https://tg-alert.phantomstay.com/assets/global-7500.jpg",
+  "global 8000": "https://tg-alert.phantomstay.com/assets/global-8000.jpg",
+  "legacy 600": "https://tg-alert.phantomstay.com/assets/legacy-600.jpg",
+  "legacy 650": "https://tg-alert.phantomstay.com/assets/legacy-650.jpg",
+  "lineage 1000": "https://tg-alert.phantomstay.com/assets/lineage-1000.jpg",
+  "citation xls": "https://tg-alert.phantomstay.com/assets/citation-xls.jpg",
+  "citation xls+": "https://tg-alert.phantomstay.com/assets/citation-xls-plus.jpg",
+  "citation excel": "https://tg-alert.phantomstay.com/assets/citation-xls.jpg",
+  "falcon 7x": "https://tg-alert.phantomstay.com/assets/falcon-7x.jpg"
 }

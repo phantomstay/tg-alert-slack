@@ -111,17 +111,31 @@ ssh deploy@tg-alert.phantomstay.com sudo systemctl restart tg-alert
 
 ## Adding an aircraft photo
 
-Put the file in `assets/`, then:
+The channel posts short type codes, not names: `GLEX`, `CL350`, `L650`, `C56P`.
+`aircraft_images.json` is keyed on those codes, and the file names it expects are
+already in there, so adding a photo is usually just uploading the file under the
+name the map already points at.
 
 ```bash
-scp assets/challenger.png deploy@tg-alert.phantomstay.com:/tmp/
+scp assets/challenger-350.jpg deploy@tg-alert.phantomstay.com:/tmp/
 ssh deploy@tg-alert.phantomstay.com \
-  'sudo install -m 644 -o root -g root /tmp/challenger.png /var/www/tg-alert/assets/'
+  'sudo install -m 644 -o root -g root /tmp/challenger-350.jpg /var/www/tg-alert/assets/'
 ```
 
-Add the mapping to `aircraft_images.json` (key is a lowercase fragment matched
-against the alert's Aircraft Type, longest match wins), rsync, restart.
-Anything unmatched falls back to `ALERT_IMAGE_URL`.
+Then check nothing is 404ing:
+
+```bash
+sudo tg-alert --check-images --scan 300
+```
+
+That HEADs every photo in the map and lists any aircraft type seen in the last
+300 posts that has no photo of its own. Anything unmatched falls back to
+`ALERT_IMAGE_URL`, which is why a missing photo is easy to miss: the card still
+looks fine, it is just the wrong jet.
+
+For a genuinely new type, add the code as a key (matching is exact on the whole
+Aircraft Type first, then longest fragment, both case-insensitive), rsync,
+restart.
 
 ## Fresh install on a new box
 

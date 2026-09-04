@@ -301,6 +301,53 @@ def health(client, notify=False):
     return 0 if not failures else 1
 
 
+def check_images(client=None, scan=0):
+    """HEAD every image in aircraft_images.json and report what is missing.
+
+    With --scan N it also reads the last N channel posts and lists aircraft
+    types that have no entry at all, which is how a new type in the feed gets
+    noticed before it quietly posts the fallback photo for weeks.
+    """
+    rc = 0
+    print("images in aircraft_images.json:")
+    for url, types in sorted(alerts.mapped_images().items(), key=lambda kv: kv[0]):
+        label = ", ".join(sorted(types))
+        try:
+            r = requests.head(url, timeout=10, allow_redirects=True)
+            ctype = r.headers.get("content-type", "?")
+            ok = r.status_code == 200 and ctype.startswith("image/")
+        except Exception as e:
+            r, ctype, ok = None, f"{type(e).__name__}: {e}", False
+        status = "OK   " if ok else "MISS "
+        code = r.status_code if r is not None else "---"
+        print(f"  {status} {code} {url}\n        used by: {label}")
+        if not ok:
+            rc = 1
+
+    fallback = os.getenv("ALERT_IMAGE_URL")
+    print(f"\nfallback ALERT_IMAGE_URL: {fallback or 'not set, unmatched types post with no photo'}")
+
+    if scan and client:
+        seen = {}
+        with client:
+            for m in client.iter_messages(CHANNEL, limit=scan):
+                alert = alerts.parse(m.message)
+                if alert and alert["aircraft"]:
+                    seen[alert["aircraft"]] = seen.get(alert["aircraft"], 0) + 1
+        unmapped = {
+            t: n for t, n in seen.items()
+            if alerts.image_for({"aircraft": t}) in (None, fallback)
+        }
+        print(f"\naircraft types in the last {scan} posts: {len(seen)}")
+        for t, n in sorted(seen.items(), key=lambda kv: -kv[1]):
+            mark = "  no image" if t in unmapped else ""
+            print(f"  {n:4}  {t}{mark}")
+        if unmapped:
+            print(f"\n{len(unmapped)} type(s) have no photo and fall back")
+            rc = 1
+    return rc
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill", type=int, metavar="N", help="parse the last N posts and exit")
@@ -315,6 +362,11 @@ def main():
                     help="send a fake health failure to the ops destination to prove it works")
     ap.add_argument("--test-post", action="store_true",
                     help="post one clearly-marked test card to slack to prove the chain works")
+    ap.add_argument("--check-images", action="store_true",
+                    help="check every photo in aircraft_images.json is actually reachable")
+    ap.add_argument("--scan", type=int, default=0, metavar="N",
+                    help="with --check-images, also list aircraft types in the last N posts "
+                         "that have no photo mapped")
     ap.add_argument("--mark-seen", type=int, metavar="N",
                     help="mark the last N posts as already sent without posting them; "
                          "use once on a fresh install so startup catch-up stays quiet")
@@ -326,6 +378,9 @@ def main():
         sys.exit(0 if ok else 1)
 
     client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+
+    if args.check_images:
+        sys.exit(check_images(client, args.scan))
 
     if args.health:
         sys.exit(health(client, notify=args.notify))
